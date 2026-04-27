@@ -1,0 +1,106 @@
+name: Download from User Input
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Space-separated URLs to download'
+        required: true
+        type: string
+      mode:
+        description: 'Download mode: normal (individual files) or zip (pack all in one zip)'
+        required: false
+        type: choice
+        default: normal
+        options:
+          - normal
+          - zip
+      split_size:
+        description: 'Split size for large files (e.g., 90m, 95m, 100m)'
+        required: false
+        type: string
+        default: '90m'
+
+permissions:
+  contents: write
+
+jobs:
+  process-download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install aria2
+        run: sudo apt-get install -y aria2
+
+      - name: Download files using aria2
+        run: |
+          URLS="${{ github.event.inputs.file_url }}"
+          MODE="${{ github.event.inputs.mode }}"
+          echo "Mode: $MODE"
+          mkdir -p downloads tmp_downloads
+
+          for URL in $URLS; do
+            FILENAME=$(basename "$URL")
+            echo "Downloading $URL -> $FILENAME"
+            aria2c --split=2 --max-connection-per-server=2 --min-split-size=90M --dir="tmp_downloads" "$URL"
+          done
+
+          if [ "$MODE" = "zip" ]; then
+            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
+            zip -j "$ARCHIVE_NAME" tmp_downloads/*
+          fi
+
+          SPLIT_SIZE="${{ github.event.inputs.split_size }}"
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$(echo "$SPLIT_SIZE" | sed 's/m$//' | awk '{print $1 * 1024 * 1024}')
+            BASENAME=$(basename "$FILE")
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "Splitting $BASENAME (size $(( SIZE / 1024 / 1024 ))MB) with zip"
+              zip -s "$SPLIT_SIZE" "downloads/${BASENAME}.zip" -j "$FILE"
+            else
+              cp "$FILE" "downloads/$BASENAME"
+            fi
+          done
+
+          rm -rf tmp_downloads
+
+      - name: Commit and push in batches of 5 files
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          mapfile -t ALL_FILES < <(git ls-files --others --modified --exclude-standard downloads/)
+
+          TOTAL=${#ALL_FILES[@]}
+          echo "Total files to push: $TOTAL"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+
+          BATCH_SIZE=5
+          BATCH_NUM=0
+
+          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
+            BATCH_NUM=$(( BATCH_NUM + 1 ))
+            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
+
+            echo "Pushing batch $BATCH_NUM: files $((i+1))-$(( i + ${#BATCH[@]} )) of $TOTAL"
+
+            git add "${BATCH[@]}"
+            git commit -m "Add downloaded files - batch $BATCH_NUM [skip ci]"
+
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+
+            echo "Batch $BATCH_NUM pushed"
+          done
+
+          echo "All $TOTAL files pushed in $BATCH_NUM batch(es)"
