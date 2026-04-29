@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: 'URLs to download — separated by space, comma, or new line'
+        description: 'URLs to download — separated by space or comma'
         required: true
         type: string
       mode:
@@ -70,7 +70,7 @@ jobs:
 
           mkdir -p downloads tmp_downloads
 
-          NORMALIZED_URLS=$(echo "$FILE_URLS" | tr ',\n' '  ' | tr -s ' ' | sed 's/^ //;s/ $//')
+          NORMALIZED_URLS=$(echo "$FILE_URLS" | tr ',' ' ' | tr -s ' ' | sed 's/^ //;s/ $//')
           URL_ARRAY=($NORMALIZED_URLS)
           URL_COUNT=${#URL_ARRAY[@]}
           echo "Total URLs to download: $URL_COUNT"
